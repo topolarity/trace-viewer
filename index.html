@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Tracy Profiler</title>
+    <style>
+      body {
+        font-family: arial;
+        margin: 0;
+        padding: none;
+        background-color: rgb(60,60,60);
+      }
+
+      .emscripten { padding-right: 0; margin-left: auto; margin-right: auto; display: block; }
+      div.emscripten { text-align:center; }
+      /* the canvas *must not* have any border or padding, or mouse coords will be wrong */
+      canvas.emscripten { border: 0px none; background-color: black; }
+
+      .spinner {
+        height: 30px;
+        width: 30px;
+        margin: 0;
+        margin-top: 20px;
+        margin-left: 20px;
+        display: inline-block;
+        vertical-align: top;
+
+        -webkit-animation: rotation .8s linear infinite;
+        -moz-animation: rotation .8s linear infinite;
+        -o-animation: rotation .8s linear infinite;
+        animation: rotation 0.8s linear infinite;
+
+        border-left: 5px solid rgb(235, 235, 235);
+        border-right: 5px solid rgb(235, 235, 235);
+        border-bottom: 5px solid rgb(235, 235, 235);
+        border-top: 5px solid rgb(120, 120, 120);
+
+        border-radius: 100%;
+        background-color: rgb(189, 215, 46);
+      }
+
+      @-webkit-keyframes rotation {
+        from {-webkit-transform: rotate(0deg);}
+        to {-webkit-transform: rotate(360deg);}
+      }
+      @-moz-keyframes rotation {
+        from {-moz-transform: rotate(0deg);}
+        to {-moz-transform: rotate(360deg);}
+      }
+      @-o-keyframes rotation {
+        from {-o-transform: rotate(0deg);}
+        to {-o-transform: rotate(360deg);}
+      }
+      @keyframes rotation {
+        from {transform: rotate(0deg);}
+        to {transform: rotate(360deg);}
+      }
+
+      #status {
+        display: inline-block;
+        vertical-align: top;
+        margin-top: 30px;
+        margin-left: 20px;
+        font-weight: bold;
+        color: whitesmoke;
+      }
+
+      #progress {
+        height: 20px;
+        width: 300px;
+      }
+    </style>
+  </head>
+  <body>
+    <div style="height: 100vh" id="inputSection" class="row">
+    <div class="col my-auto">
+    <div width="60%" class="row text-center justify-content-center">
+      <div class="col-7">
+        <label for="formFileLg" class="form-label">Open your <code>.tracy</code> file</label>
+        <input class="form-control form-control-lg" id="tracefile" accept=".tracy" type="file" onchange="startTracy(this)">
+      </div>
+    </div>
+    <br />
+    <div width="60%" class="row justify-content-center">
+    <div class="col-7">
+    <hr />
+    </div>
+    </div>
+    <br />
+    <div width="60%" class="row justify-content-center">
+      <div class="text-center"><p>Create a viewer URL for a <code>.tracy</code> file already on the Web</p></div>
+      <div class="col-auto">
+        <button class="btn btn-primary mb-3" onclick="makeTracyURL()">View Online Trace</button>
+      </div>
+      <div class="col-6">
+        <label for="inputTraceFileURL" class="visually-hidden">URL for .tracy file</label>
+        <input type="text" class="form-control" id="inputTraceFileURL" placeholder="URL for .tracy file">
+        <p id="url-error" class="text-danger" style="display: none;">File download failed. You may have provided an incorrect URL.<br /><br />If the URL is correct after all, loading the file in this webpage may be disallowed by the host's <a href="https://stackoverflow.com/a/35553666">CORS</a> policy.<br />Check your Javascript Console for more information.</p>
+        <p id="specific-url-error" class="text-danger" style="display: none;">File download failed.</p>
+      </div>
+    </div>
+    </div>
+    </div>
+    <div id="emscriptenSection" style="display: none;">
+
+    <div id="preload">
+      <div class="spinner" id='spinner'></div>
+      <div class="emscripten" id="status">Downloading...</div>
+    </div>
+
+    <div class="emscripten">
+      <progress value="0" max="100" id="progress" hidden=1></progress>
+      <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex=-1></canvas>
+    </div>
+    </div>
+
+    <script src="coi-serviceworker.js"></script>
+    <script type='text/javascript'>
+      var statusElement = document.getElementById('status');
+      var progressElement = document.getElementById('progress');
+      var spinnerElement = document.getElementById('spinner');
+      var preloadElement = document.getElementById('preload');
+
+      function resizeHandler() {
+        let w = Math.floor(Math.floor(window.innerWidth * window.devicePixelRatio) / window.devicePixelRatio);
+        let h = Math.floor(Math.floor(window.innerHeight * window.devicePixelRatio) / window.devicePixelRatio);
+        if(preloadElement.hidden === true) {
+          Module.ccall('nativeResize', 'number', ['number', 'number'], [w * window.devicePixelRatio, h * window.devicePixelRatio]);
+        }
+        Module.canvas.style.width = w + 'px';
+        Module.canvas.style.height = h + 'px';
+      }
+
+      var Module = {
+        preRun: [],
+        postRun: [],
+        print: (function() {
+          return function(text) {
+            if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+            console.log(text);
+          };
+        })(),
+        locateFile: (function() {
+          return function(path) {
+            if (path == "Tracy-release.data")
+              return path;
+
+            // Append version string to bust cache
+            return path + "?ver=1";
+          }
+        })(),
+        packageMetadata: (function() {
+          return function() {
+            return {
+              "files": [{
+                  "filename":"/embed.tracy",
+                  "start":0,
+                  "end":Module['traceSize'],
+              }],
+              "remote_package_size":Module['traceSize'],
+            };
+          };
+        })(),
+        canvas: (function() {
+          var canvas = document.getElementById('canvas');
+
+          // As a default initial behavior, pop up an alert when webgl context is lost. To make your
+          // application robust, you may want to override this behavior before shipping!
+          // See http://www.khronos.org/registry/webgl/specs/latest/1.0/#5.15.2
+          canvas.addEventListener("webglcontextlost", function(e) { alert('WebGL context lost. You will need to reload the page.'); e.preventDefault(); }, false);
+
+          return canvas;
+        })(),
+        setStatus: function(text) {
+          if (!Module.setStatus.last) Module.setStatus.last = { time: Date.now(), text: '' };
+          if (text === Module.setStatus.last.text) return;
+          var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+          var now = Date.now();
+          if (m && now - Module.setStatus.last.time < 30) return; // if this is a progress update, skip it if too soon
+          Module.setStatus.last.time = now;
+          Module.setStatus.last.text = text;
+          if (m) {
+            text = m[1];
+            progressElement.value = parseInt(m[2])*100;
+            progressElement.max = parseInt(m[4])*100;
+            progressElement.hidden = false;
+            spinnerElement.hidden = false;
+            preloadElement.hidden = false;
+          } else if (!text) {
+            progressElement.value = null;
+            progressElement.max = null;
+            progressElement.hidden = true;
+            preloadElement.hidden = true;
+            spinnerElement.style.display = 'none';
+            resizeHandler();
+          }
+          statusElement.innerHTML = text;
+        },
+        totalDependencies: 0,
+        monitorRunDependencies: function(left) {
+          this.totalDependencies = Math.max(this.totalDependencies, left);
+          Module.setStatus(left ? 'Preparing... (' + (this.totalDependencies-left) + '/' + this.totalDependencies + ')' : 'All downloads complete.');
+        }
+      };
+      Module.setStatus('Downloading...');
+      window.onerror = function(event) {
+        // TODO: do not warn on ok events like simulating an infinite loop or exitStatus
+        Module.setStatus('Exception thrown, see JavaScript console');
+        spinnerElement.style.display = 'none';
+        Module.setStatus = function(text) {
+          if (text) console.error('[post-exception status] ' + text);
+        };
+      };
+      addEventListener('resize', resizeHandler);
+      resizeHandler();
+
+      function addScriptToDom(scriptCode) {
+        return new Promise(function(resolve, reject) {
+          var script = document.createElement('script');
+          var blob = new Blob([scriptCode], { type: 'application/javascript' });
+          var objectUrl = URL.createObjectURL(blob);
+          script.src = objectUrl;
+          script.onload = function() {
+            console.log('added js script to dom');
+            script.onload = script.onerror = null; // Remove these onload and onerror handlers, because these capture the inputs to the Promise and the input function, which would leak a lot of memory!
+            URL.revokeObjectURL(objectUrl); // Free up the blob. Note that for debugging purposes, this can be useful to comment out to be able to read the sources in debugger.
+            resolve();
+          }
+          script.onerror = function(e) {
+            script.onload = script.onerror = null; // Remove these onload and onerror handlers, because these capture the inputs to the Promise and the input function, which would leak a lot of memory!
+            URL.revokeObjectURL(objectUrl);
+            console.error('script failed to add to dom: ' + e);
+            reject(e.message || "(out of memory?)");
+          }
+          document.body.appendChild(script);
+        });
+      }
+
+      Module.getPreloadedPackage = function(remotePackageName, remotePackageSize) {
+        console.log('Runtime asking for remote package ' + remotePackageName + ', expected size ' + remotePackageSize + ' bytes.');
+        return Module['downloadedData'];
+      }
+
+      function download(url) {
+        return new Promise(function(resolve, reject) {
+          var xhr = new XMLHttpRequest();
+          xhr.open('GET', url, true);
+          xhr.responseType = 'arraybuffer';
+          xhr.onload = function() {
+            if (xhr.status == 200 || xhr.status == 0) {
+              resolve(xhr.response);
+            } else {
+              reject(xhr);
+            }
+          };
+          xhr.onerror = function(e) { reject(xhr); };
+          xhr.send(null);
+        });
+      }
+
+      const queryString = window.location.search;
+      const urlParams = new URLSearchParams(queryString);
+      const trace = urlParams.get('trace');
+      if (trace !== null) {
+        document.getElementById("inputSection").style.display = 'none';
+        document.getElementById("emscriptenSection").style.display = 'block';
+        Module['traceSize'] = urlParams.get('size');
+        var dataDownload = download(trace).then(function(data) {
+          console.log('downloaded data file');
+          Module['downloadedData'] = data;
+          var jsDownload = download('Tracy-release.js?ver=1').then(function(data) {
+            Module['mainScriptUrlOrBlob'] = new Blob([data], { type: 'application/javascript' });
+            addScriptToDom(data);
+          });
+        });
+      }
+
+      function startTracy(input) {
+        document.getElementById("inputSection").style.display = 'none';
+        document.getElementById("emscriptenSection").style.display = 'block';
+        let file = input.files[0];
+        let reader = new FileReader();
+        reader.onload = function(event) {
+          Module['downloadedData'] = reader.result;
+          Module['traceSize'] = reader.result.byteLength;
+
+          var jsDownload = download('Tracy-release.js?ver=1').then(function(data) {
+            Module['mainScriptUrlOrBlob'] = new Blob([data], { type: 'application/javascript' });
+            addScriptToDom(data);
+          });
+        };
+        reader.readAsArrayBuffer(file);
+      }
+
+      function makeTracyURL() {
+        const input = document.getElementById("inputTraceFileURL");
+        const url = input.value;
+
+        const base_url = "http://127.0.0.1:8000/?trace=";
+        //const base_url = "https://topolarity.github.io/tracy-traces/experimental/?trace=";
+        if (url.startsWith(base_url))
+          return;
+
+        document.getElementById("url-error").style.display = 'none';
+        document.getElementById("specific-url-error").style.display = 'none';
+
+        if (url == "")
+          return;
+
+        // Side step the CORS restrictions at github.com by computing the redirection for ourselves.
+        const github_url = /^https?:\/\/github\.com\/([^\/\r\n]*)\/([^\/\r\n]*)\/(?:raw|blob)\/([^\?\r\n]*)(?:\?raw=true)?/;
+        const matches = github_url.exec(url);
+        if (matches)
+          input.value = `https://raw.githubusercontent.com/${matches.slice(1).join("/")}`;
+
+        download(input.value).then(function(data){
+          window.location.href = base_url.concat(encodeURIComponent(input.value), "&size=", data.byteLength);
+        }).catch(function(xhr){
+          if (xhr.status == 0) {
+            document.getElementById("url-error").style.display = 'block';
+          } else {
+            const element = document.getElementById("specific-url-error");
+            element.style.display = 'block';
+            element.innerHTML = "File download failed. (HTTP Error " + xhr.status + ")";
+          }
+        });
+      }
+    </script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-KK94CHFLLe+nY2dmCWGMq91rCGa5gtU4mk92HdvYe+M/SXH301p5ILy+dN9+nJOZ" crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js" integrity="sha384-ENjdO4Dr2bkBIFxQpeoTz1HIcje39Wm4jDKdf19U8gI4ddQ3GYNS7NTKfAdVQSZe" crossorigin="anonymous"></script>
+  </body>
+</html>
