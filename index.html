@@ -147,7 +147,7 @@
               return path;
 
             // Append version string to bust cache
-            return path + "?ver=3";
+            return path + "?ver=4";
           }
         })(),
         packageMetadata: (function() {
@@ -269,7 +269,7 @@
         var dataDownload = download(trace).then(function(data) {
           console.log('downloaded data file');
           Module['downloadedData'] = data;
-          var jsDownload = download('Tracy-release.js?ver=3').then(function(data) {
+          var jsDownload = download('Tracy-release.js?ver=4').then(function(data) {
             Module['mainScriptUrlOrBlob'] = new Blob([data], { type: 'application/javascript' });
             addScriptToDom(data);
           });
@@ -285,7 +285,7 @@
           Module['downloadedData'] = reader.result;
           Module['traceSize'] = reader.result.byteLength;
 
-          var jsDownload = download('Tracy-release.js?ver=3').then(function(data) {
+          var jsDownload = download('Tracy-release.js?ver=4').then(function(data) {
             Module['mainScriptUrlOrBlob'] = new Blob([data], { type: 'application/javascript' });
             addScriptToDom(data);
           });
